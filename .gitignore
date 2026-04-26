@@ -1,0 +1,7 @@
+# global
+node_modules/
+.env
+
+# system
+.DS_Store
+Thumbs.db
