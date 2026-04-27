@@ -1,14 +1,15 @@
+import "dotenv/config";
+
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import http from "http";
 import { Server } from "socket.io";
 
 import connectDB from "./config/db.js";
 import userRoutes from "./routes/user.js";
 import roomRoutes from "./routes/room.js";
-
-dotenv.config();
+import webhookRoute from './routes/webhook.js';
+import paymentRoutes from "./routes/payment.js";
 
 const app = express();
 
