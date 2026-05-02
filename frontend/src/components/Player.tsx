@@ -1,112 +1,94 @@
 import { useEffect, useRef } from "react";
 import YouTube from "react-youtube";
 import { socket } from "../socket";
-import { usePlayerStore, useRoomStore } from "../store";
+import { usePlayerStore, useRoomStore, useQueueStore } from "../store";
+
+interface SyncState { videoId: string; currentTime: number; isPlaying: boolean; }
 
 export const Player = () => {
-  const { videoId, setVideoId, setPlayer, setCurrentTime, setIsPlaying } =
-    usePlayerStore();
-  const { currentRoom, hostId } = useRoomStore();
-  const playerRef = useRef(null);
-  const syncTimeoutRef = useRef(null);
+  const { videoId, setVideoId, setPlayer, setIsPlaying, isPlaying } = usePlayerStore();
+  const { currentRoom } = useRoomStore();
+  const { queue } = useQueueStore();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const playerRef = useRef<any>(null);
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isFirstSyncRef = useRef(true);
+  const nowPlaying = queue.find((v) => v.videoId === videoId);
 
-  // ========================
-  // READY
-  // ========================
-  const onReady = (event) => {
-    setPlayer(event.target);
-    playerRef.current = event.target;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const onReady = (event: any) => { setPlayer(event.target); playerRef.current = event.target; isFirstSyncRef.current = true; };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const onStateChange = (event: any) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const YT = ((window as unknown) as { YT: { PlayerState: Record<string, number> } }).YT;
+    if (event.data === YT.PlayerState.ENDED && currentRoom) socket.emit("song_ended", { roomCode: currentRoom });
+    if (event.data === YT.PlayerState.PLAYING) setIsPlaying(true);
+    if (event.data === YT.PlayerState.PAUSED) setIsPlaying(false);
   };
 
-  // ========================
-  // STATE CHANGE
-  // ========================
-  const onStateChange = (event) => {
-    const YT = window.YT;
-
-    // Video ended
-    if (event.data === YT.PlayerState.ENDED) {
-      if (currentRoom) {
-        socket.emit("song_ended", { roomCode: currentRoom });
-      }
-    }
-
-    // Playing
-    if (event.data === YT.PlayerState.PLAYING) {
-      setIsPlaying(true);
-    }
-
-    // Paused
-    if (event.data === YT.PlayerState.PAUSED) {
-      setIsPlaying(false);
-    }
-  };
-
-  // ========================
-  // SYNC STATE HANDLER
-  // ========================
   useEffect(() => {
-    const handleSyncState = (state) => {
+    const handleSyncState = (state: SyncState) => {
       if (!playerRef.current) return;
-
       const { videoId: newVideoId, currentTime, isPlaying } = state;
-
-      setVideoId(newVideoId);
-
-      // Clear pending sync
-      if (syncTimeoutRef.current) {
-        clearTimeout(syncTimeoutRef.current);
-      }
-
-      // Apply sync with delay
+      if (newVideoId !== videoId) { setVideoId(newVideoId); return; }
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = setTimeout(() => {
         if (!playerRef.current) return;
-
         try {
           const drift = Math.abs(playerRef.current.getCurrentTime() - currentTime);
-
-          // Resync if drift > 1 second
-          if (drift > 1) {
+          if (isFirstSyncRef.current || drift > 2) {
             playerRef.current.seekTo(currentTime, true);
-            console.log(`🔄 Synced (drift: ${drift.toFixed(2)}s)`);
+            isFirstSyncRef.current = false;
           }
-
-          if (isPlaying) {
-            playerRef.current.playVideo();
-          } else {
-            playerRef.current.pauseVideo();
-          }
-        } catch (error) {
-          console.error("Sync error:", error);
-        }
-      }, 300);
+          if (isPlaying) playerRef.current.playVideo(); else playerRef.current.pauseVideo();
+        } catch (err) { console.error("Sync error:", err); }
+      }, 250);
     };
-
     socket.on("sync_state", handleSyncState);
-    return () => {
-      socket.off("sync_state", handleSyncState);
-      if (syncTimeoutRef.current) {
-        clearTimeout(syncTimeoutRef.current);
-      }
-    };
-  }, [setVideoId, setCurrentTime, setIsPlaying]);
+    return () => { socket.off("sync_state", handleSyncState); if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current); };
+  }, [videoId, setVideoId]);
 
   return (
-    <div className="w-full bg-black rounded-xl overflow-hidden shadow-2xl">
-      <YouTube
-        videoId={videoId}
-        onReady={onReady}
-        onStateChange={onStateChange}
-        opts={{
-          height: "390",
-          width: "100%",
-          playerVars: {
-            autoplay: 0,
-            controls: 1,
-            modestbranding: 1,
-          },
-        }}
-      />
-    </div>
+    <>
+      {/* Track info */}
+      <div className="track-info">
+        <div className="track-meta">
+          <div className="track-title">{nowPlaying ? nowPlaying.title : "HeartWave Player"}</div>
+          <div className="track-artist">{currentRoom ? `Room #${currentRoom}` : "Waiting for track..."}</div>
+        </div>
+        {isPlaying && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div className="track-badge">
+              <div className="eq-bars">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="eq-bar" style={{ animationDelay: `${i * 0.1}s` }} />
+                ))}
+              </div>
+              Now Playing
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* YouTube embed area */}
+      <div className="video-embed">
+        {!videoId && (
+          <div className="video-placeholder">
+            <div className="play-visual">▶</div>
+            <span className="yt-label">YouTube · 16:9</span>
+          </div>
+        )}
+        <div style={{ position: "absolute", inset: 0, opacity: videoId ? 1 : 0, pointerEvents: videoId ? "auto" : "none" }}>
+          <YouTube
+            videoId={videoId}
+            onReady={onReady}
+            onStateChange={onStateChange}
+            opts={{ height: "100%", width: "100%", playerVars: { autoplay: 0, controls: 1, modestbranding: 1, rel: 0 } }}
+            style={{ width: "100%", height: "100%" }}
+          />
+        </div>
+      </div>
+    </>
   );
 };

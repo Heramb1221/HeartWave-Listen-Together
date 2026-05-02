@@ -1,139 +1,63 @@
 import { useState, useEffect, useRef } from "react";
 import { socket } from "../socket";
 import { useRoomStore } from "../store";
-import { Search as SearchIcon, Plus } from "lucide-react";
+import { Search as SearchIcon, Loader2 } from "lucide-react";
+
+interface YouTubeVideo {
+  id: { videoId: string };
+  snippet: { title: string; channelTitle: string; thumbnails: { default: { url: string } } };
+}
 
 export const Search = () => {
   const { currentRoom } = useRoomStore();
-  const [searchQuery, setSearchQuery] = useState("");
-  const [results, setResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const timeoutRef = useRef(null);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<YouTubeVideo[]>([]);
+  const [searching, setSearching] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ========================
-  // SEARCH
-  // ========================
   useEffect(() => {
-    if (!searchQuery.trim()) {
-      setResults([]);
-      return;
-    }
-
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-
-    setIsSearching(true);
-
+    if (!query.trim()) { setResults([]); return; }
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setSearching(true);
     timeoutRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(
-          `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(
-            searchQuery
-          )}&type=video&maxResults=8&key=${import.meta.env.VITE_YOUTUBE_API_KEY}`
-        );
-
+        const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=6&key=${import.meta.env.VITE_YOUTUBE_API_KEY}`);
         const data = await res.json();
         setResults(data.items || []);
-      } catch (error) {
-        console.error("Search error:", error);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 300);
+      } catch (err) { console.error("Search error:", err); }
+      finally { setSearching(false); }
+    }, 350);
+    return () => { if (timeoutRef.current) clearTimeout(timeoutRef.current); };
+  }, [query]);
 
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, [searchQuery]);
-
-  // ========================
-  // ADD TO QUEUE
-  // ========================
-  const addToQueue = (video) => {
-    if (!currentRoom) {
-      alert("Join a room first!");
-      return;
-    }
-
-    socket.emit("add_to_queue", {
-      roomCode: currentRoom,
-      video: {
-        videoId: video.id.videoId,
-        title: video.snippet.title,
-        thumbnail: video.snippet.thumbnails.default.url,
-      },
-    });
-
-    setSearchQuery("");
+  const addToQueue = (video: YouTubeVideo) => {
+    if (!currentRoom) return;
+    socket.emit("add_to_queue", { roomCode: currentRoom, video: { videoId: video.id.videoId, title: video.snippet.title, thumbnail: video.snippet.thumbnails.default.url } });
+    setQuery(""); setResults([]);
   };
 
-  // ========================
-  // RENDER
-  // ========================
-  if (!currentRoom) {
-    return null;
-  }
+  if (!currentRoom) return null;
 
   return (
-    <div className="space-y-4">
-      {/* Search Input */}
-      <div className="relative">
-        <SearchIcon
-          size={18}
-          className="absolute left-3 top-3 text-slate-400"
-        />
-        <input
-          placeholder="Search songs..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-10 pr-4 py-3 bg-slate-700 text-white rounded-lg placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-pink-500 transition"
-        />
+    <div className="sidebar-search">
+      <div className="search-box">
+        <span className="search-icon">
+          {searching ? <Loader2 size={14} className="animate-spin" /> : <SearchIcon size={14} />}
+        </span>
+        <input placeholder="Search songs, artists…" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
-
-      {/* Results */}
       {results.length > 0 && (
-        <div className="space-y-2 max-h-96 overflow-y-auto">
-          {results.map((video) => (
-            <div
-              key={video.id.videoId}
-              className="flex gap-3 bg-slate-700/50 p-3 rounded-lg hover:bg-slate-600/50 transition group"
-            >
-              <img
-                src={video.snippet.thumbnails.default.url}
-                alt={video.snippet.title}
-                className="w-12 h-12 rounded object-cover"
-              />
-              <div className="flex-1 min-w-0">
-                <p className="text-white text-sm font-semibold truncate">
-                  {video.snippet.title}
-                </p>
-                <p className="text-slate-400 text-xs truncate">
-                  {video.snippet.channelTitle}
-                </p>
+        <div className="search-results">
+          {results.map((v) => (
+            <div key={v.id.videoId} className="search-item" onClick={() => addToQueue(v)}>
+              <img className="search-thumb" src={v.snippet.thumbnails.default.url} alt="" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="search-title">{v.snippet.title}</div>
+                <div className="search-sub">{v.snippet.channelTitle}</div>
               </div>
-              <button
-                onClick={() => addToQueue(video)}
-                className="bg-pink-500 hover:bg-pink-600 text-white p-2 rounded transition opacity-0 group-hover:opacity-100"
-              >
-                <Plus size={18} />
-              </button>
+              <div className="btn-add">+ Add</div>
             </div>
           ))}
-        </div>
-      )}
-
-      {isSearching && (
-        <div className="text-center text-slate-400 text-sm">
-          🔍 Searching...
-        </div>
-      )}
-
-      {searchQuery && results.length === 0 && !isSearching && (
-        <div className="text-center text-slate-400 text-sm">
-          No results found
         </div>
       )}
     </div>

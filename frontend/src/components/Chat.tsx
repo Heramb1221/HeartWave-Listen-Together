@@ -1,98 +1,84 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useUser } from "@clerk/clerk-react";
 import { socket } from "../socket";
 import { useChatStore, useRoomStore } from "../store";
-import { Send } from "lucide-react";
 
 export const Chat = () => {
   const { user } = useUser();
   const { currentRoom } = useRoomStore();
-  const { messages, chatInput, setMessages, addMessage, setChatInput } =
-    useChatStore();
+  const { messages, chatInput, addMessage, setChatInput } = useChatStore();
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  // ========================
-  // LISTEN FOR MESSAGES
-  // ========================
+  // Auto-scroll on new messages
   useEffect(() => {
-    const handleReceiveMessage = (msg) => {
-      addMessage(msg);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-      // Handle commands
+  useEffect(() => {
+    const handleReceiveMessage = (msg: { user: string; text: string; timestamp: string }) => {
+      addMessage(msg);
       if (msg.text.startsWith("/play ")) {
         const query = msg.text.replace("/play ", "");
         console.log(`Command: search for "${query}"`);
       }
     };
-
     socket.on("receive_message", handleReceiveMessage);
-    return () => socket.off("receive_message", handleReceiveMessage);
+    return () => { socket.off("receive_message", handleReceiveMessage); };
   }, [addMessage]);
 
-  // ========================
-  // SEND MESSAGE
-  // ========================
-  const handleSendMessage = (e) => {
+  const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-
     if (!chatInput.trim() || !currentRoom) return;
-
     socket.emit("send_message", {
       roomCode: currentRoom,
-      message: {
-        user: user?.firstName || "Anonymous",
-        text: chatInput,
-      },
+      message: { user: user?.firstName || "Anonymous", text: chatInput },
     });
-
     setChatInput("");
   };
 
-  // ========================
-  // RENDER
-  // ========================
-  if (!currentRoom) {
-    return (
-      <div className="text-slate-400 text-center py-8">
-        Join a room to chat
-      </div>
-    );
-  }
+  if (!currentRoom) return null;
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Messages */}
-      <div className="flex-1 space-y-2 max-h-96 overflow-y-auto mb-4">
+    <div className="bottom-dock">
+      <div className="dock-drag" title="Drag to resize"></div>
+
+      <div className="chat-messages">
         {messages.length === 0 ? (
-          <div className="text-slate-400 text-center py-8 text-sm">
-            No messages yet. Start chatting!
-          </div>
+          <div className="chat-sys">No messages yet. Start chatting!</div>
         ) : (
-          messages.map((msg, idx) => (
-            <div key={idx} className="bg-slate-700/50 rounded-lg p-3">
-              <p className="text-pink-400 text-sm font-bold">{msg.user}</p>
-              <p className="text-white text-sm break-words">{msg.text}</p>
-              <p className="text-slate-400 text-xs mt-1">
-                {new Date(msg.timestamp).toLocaleTimeString()}
-              </p>
-            </div>
-          ))
+          messages.map((msg, idx) => {
+            const isMe = msg.user === (user?.firstName || "Anonymous");
+            return (
+              <div key={idx} className="chat-msg">
+                <div className={`chat-avatar ${isMe ? "av-pink" : "av-violet"}`}>
+                  {msg.user.substring(0, 2).toUpperCase()}
+                </div>
+                <div className="chat-content">
+                  <div className="chat-meta">
+                    <span className="chat-name" style={{ color: isMe ? "var(--pink)" : "var(--violet)" }}>{msg.user}</span>
+                    <span className="chat-time">{new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    {isMe && <span style={{ fontSize: 10, background: "var(--pink-dim)", color: "var(--pink)", border: "1px solid rgba(236,72,153,0.2)", padding: "1px 5px", borderRadius: 4 }}>you</span>}
+                  </div>
+                  <div className="chat-text">{msg.text}</div>
+                </div>
+              </div>
+            );
+          })
         )}
+        <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <form onSubmit={handleSendMessage} className="flex gap-2">
+      <form className="dock-input-row" onSubmit={handleSendMessage}>
         <input
-          placeholder="Type a message..."
+          className="chat-input"
+          placeholder="Message… or /play <song>"
           value={chatInput}
           onChange={(e) => setChatInput(e.target.value)}
-          className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-pink-500 text-sm"
         />
-        <button
-          type="submit"
-          className="bg-pink-500 hover:bg-pink-600 text-white p-2 rounded-lg transition"
-        >
-          <Send size={18} />
-        </button>
+        <button type="submit" className="dock-btn send" title="Send">➤</button>
+        <div className="dock-btn active-mic" title="Mute / Unmute">🎤</div>
+        <div className="dock-btn" title="Camera Off">📷</div>
+        <div className="dock-btn" title="Settings">⚙️</div>
       </form>
     </div>
   );

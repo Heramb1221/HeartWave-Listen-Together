@@ -14,17 +14,19 @@ const app = express();
 // ========================
 // MIDDLEWARE (ORDER MATTERS)
 // ========================
-app.use(express.raw({ type: "application/json" }, (req, res, next) => {
-  if (req.path === "/api/payment/webhook") return next();
-  express.json()(req, res, next);
+// CORS for all routes
+app.use(cors({
+  origin: process.env.CLIENT_URL || "http://localhost:5173",
+  credentials: true,
 }));
 
+// JSON body parsing for all routes EXCEPT Stripe webhook (which needs raw body)
 app.use((req, res, next) => {
-  if (req.path === "/api/payment/webhook") return next();
-  cors()(req, res, next);
+  if (req.path === "/api/payment/webhook") {
+    return next();
+  }
+  express.json()(req, res, next);
 });
-
-app.use(cors());
 
 // ========================
 // ROUTES
@@ -61,9 +63,33 @@ const io = new Server(server, {
 // ROOM STATE MANAGEMENT
 // ========================
 const roomUsers = {}; // { roomCode: [{ socketId, clerkId, name, avatar }] }
-const roomState = {}; // { roomCode: { videoId, currentTime, isPlaying } }
+const roomState = {}; // { roomCode: { videoId, currentTime, isPlaying, lastUpdated } }
 const roomQueue = {}; // { roomCode: [{ videoId, title }] }
 const peerConnections = {}; // { roomCode: { [socketId]: [{ peerId, socket }] } }
+
+// ========================
+// PERIODIC SYNC HEARTBEAT
+// Broadcasts current state every 30s to correct drift in long sessions
+// ========================
+setInterval(() => {
+  Object.entries(roomState).forEach(([roomCode, state]) => {
+    const usersInRoom = roomUsers[roomCode];
+    if (!usersInRoom || usersInRoom.length === 0) return;
+
+    // Estimate current playback position if playing
+    let estimatedTime = state.currentTime;
+    if (state.isPlaying && state.lastUpdated) {
+      const elapsed = (Date.now() - state.lastUpdated) / 1000;
+      estimatedTime = state.currentTime + elapsed;
+    }
+
+    io.to(roomCode).emit("sync_state", {
+      videoId: state.videoId,
+      currentTime: estimatedTime,
+      isPlaying: state.isPlaying,
+    });
+  });
+}, 30000);
 
 // ========================
 // SOCKET.IO CONNECTION
@@ -89,6 +115,7 @@ io.on("connection", (socket) => {
           videoId: "dQw4w9WgXcQ",
           currentTime: 0,
           isPlaying: false,
+          lastUpdated: Date.now(),
         };
         roomQueue[roomCode] = [];
         peerConnections[roomCode] = {};
@@ -128,6 +155,47 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("❌ Join error:", error);
       socket.emit("error", { message: "Failed to join room" });
+    }
+  });
+
+  // ========================
+  // LEAVE ROOM
+  // ========================
+  socket.on("leave_room", ({ roomCode }) => {
+    try {
+      if (!roomCode) return;
+
+      console.log(`🚪 ${socket.id} left room ${roomCode}`);
+
+      socket.leave(roomCode);
+
+      // Remove user from room
+      if (roomUsers[roomCode]) {
+        roomUsers[roomCode] = roomUsers[roomCode].filter(
+          (u) => u.socketId !== socket.id
+        );
+        io.to(roomCode).emit("room_users", roomUsers[roomCode]);
+
+        // Clean up empty room
+        if (roomUsers[roomCode].length === 0) {
+          delete roomUsers[roomCode];
+          delete roomState[roomCode];
+          delete roomQueue[roomCode];
+          delete peerConnections[roomCode];
+          console.log(`🗑️  Room ${roomCode} deleted`);
+        }
+      }
+
+      // Clean up peer connections
+      if (peerConnections[roomCode]) {
+        delete peerConnections[roomCode][socket.id];
+      }
+
+      // Clear room reference from socket
+      socket.roomCode = null;
+      socket.clerkId = null;
+    } catch (error) {
+      console.error("❌ Leave room error:", error);
     }
   });
 
@@ -182,10 +250,11 @@ io.on("connection", (socket) => {
           videoId,
           currentTime: time || 0,
           isPlaying: true,
+          lastUpdated: Date.now(),
         };
 
-        io.to(roomCode).emit("sync_state", roomState[roomCode]);
-        console.log(`▶️  Room ${roomCode}: play ${videoId}`);
+        io.to(roomCode).emit("sync_state", { videoId, currentTime: time || 0, isPlaying: true });
+        console.log(`▶️  Room ${roomCode}: play ${videoId} at ${(time||0).toFixed(1)}s`);
       }
     } catch (error) {
       console.error("❌ Play error:", error);
@@ -202,9 +271,10 @@ io.on("connection", (socket) => {
       if (roomState[roomCode]) {
         roomState[roomCode].currentTime = time || 0;
         roomState[roomCode].isPlaying = false;
+        roomState[roomCode].lastUpdated = Date.now();
 
-        io.to(roomCode).emit("sync_state", roomState[roomCode]);
-        console.log(`⏸️  Room ${roomCode}: paused at ${time}s`);
+        io.to(roomCode).emit("sync_state", { videoId: roomState[roomCode].videoId, currentTime: time || 0, isPlaying: false });
+        console.log(`⏸️  Room ${roomCode}: paused at ${(time||0).toFixed(1)}s`);
       }
     } catch (error) {
       console.error("❌ Pause error:", error);
@@ -220,8 +290,9 @@ io.on("connection", (socket) => {
 
       if (roomState[roomCode]) {
         roomState[roomCode].currentTime = time || 0;
-        io.to(roomCode).emit("sync_state", roomState[roomCode]);
-        console.log(`⏩ Room ${roomCode}: seeked to ${time}s`);
+        roomState[roomCode].lastUpdated = Date.now();
+        io.to(roomCode).emit("sync_state", { videoId: roomState[roomCode].videoId, currentTime: time || 0, isPlaying: roomState[roomCode].isPlaying });
+        console.log(`⏩ Room ${roomCode}: seeked to ${(time||0).toFixed(1)}s`);
       }
     } catch (error) {
       console.error("❌ Seek error:", error);
